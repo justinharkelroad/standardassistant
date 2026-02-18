@@ -1,9 +1,14 @@
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
 import { YoutubeTranscript } from 'youtube-transcript';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { SourceType } from '../types.js';
 
+const execFileAsync = promisify(execFile);
+
 export type RelationType = 'thread_reply' | 'quote_of' | 'links_to';
+export type ExtractionMethod = 'web_fetch' | 'browser_relay' | 'api';
 
 export interface ExtractedContent {
   type: SourceType;
@@ -12,6 +17,8 @@ export interface ExtractedContent {
   publishedAt?: string;
   text: string;
   metadata?: Record<string, unknown>;
+  extractionMethod: ExtractionMethod;
+  extractionConfidence: number;
 }
 
 export interface RelatedSource {
@@ -23,6 +30,11 @@ export interface RelatedSource {
 export interface ExtractedBundle {
   source: ExtractedContent;
   related: RelatedSource[];
+}
+
+export interface ExtractionOptions {
+  browserRelayFallbackEnabled?: boolean;
+  minReadableChars?: number;
 }
 
 function isYouTubeUrl(url: string): boolean {
@@ -82,6 +94,43 @@ function asNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function looksPaywalledOrBlocked(status: number, html: string): boolean {
+  const lower = html.toLowerCase();
+  return (
+    status === 401 ||
+    status === 402 ||
+    status === 403 ||
+    status === 451 ||
+    lower.includes('subscribe to continue') ||
+    lower.includes('sign in to continue') ||
+    lower.includes('this content is for subscribers') ||
+    lower.includes('paywall')
+  );
+}
+
+export function shouldUseBrowserRelayFallback(params: {
+  enabled: boolean;
+  status: number;
+  html: string;
+  readableTextLength: number;
+  minReadableChars: number;
+}): boolean {
+  return (
+    params.enabled &&
+    (looksPaywalledOrBlocked(params.status, params.html) || params.readableTextLength < params.minReadableChars)
+  );
+}
+
+export async function extractViaBrowserRelay(url: string): Promise<{ title?: string; text: string; metadata?: Record<string, unknown>; confidence?: number }> {
+  const cmd = process.env.KB_BROWSER_RELAY_EXTRACT_CMD;
+  if (!cmd) throw new Error('Browser relay extraction command not configured (KB_BROWSER_RELAY_EXTRACT_CMD)');
+
+  const { stdout } = await execFileAsync(cmd, [url], { timeout: Number(process.env.KB_BROWSER_RELAY_TIMEOUT_MS || 45000) });
+  const parsed = JSON.parse(stdout || '{}') as { title?: string; text?: string; metadata?: Record<string, unknown>; confidence?: number };
+  if (!parsed.text?.trim()) throw new Error('Browser relay extractor returned empty text');
+  return { title: parsed.title, text: parsed.text, metadata: parsed.metadata || {}, confidence: parsed.confidence };
+}
+
 async function extractTwitter(url: string, seen = new Set<string>()): Promise<ExtractedBundle> {
   const id = twitterStatusId(url);
   if (!id) throw new Error('Could not parse Twitter status ID');
@@ -121,7 +170,9 @@ async function extractTwitter(url: string, seen = new Set<string>()): Promise<Ex
     author: authorHandle,
     publishedAt: createdAt,
     text: rawText,
-    metadata
+    metadata,
+    extractionMethod: 'api',
+    extractionConfidence: 0.92
   };
 
   const related: RelatedSource[] = [];
@@ -224,52 +275,113 @@ async function extractTikTok(url: string): Promise<ExtractedBundle> {
       author: authorHandle,
       publishedAt: createdAt,
       text: fallbackText || caption || title,
-      metadata
+      metadata,
+      extractionMethod: 'web_fetch',
+      extractionConfidence: transcript ? 0.85 : 0.65
     },
     related: []
   };
 }
 
-export async function extractFromUrl(url: string): Promise<ExtractedBundle> {
+export async function extractFromUrl(url: string, options: ExtractionOptions = {}): Promise<ExtractedBundle> {
+  const minReadableChars = options.minReadableChars || Number(process.env.KB_MIN_READABLE_CHARS || 300);
+
   if (isYouTubeUrl(url)) {
     const id = youtubeVideoId(url);
     if (!id) throw new Error('Could not parse YouTube video ID');
     const transcript = await YoutubeTranscript.fetchTranscript(id);
     const text = transcript.map((t) => t.text).join(' ');
     return {
-      source: { type: 'youtube', text, metadata: { videoId: id, transcriptCount: transcript.length } },
+      source: {
+        type: 'youtube',
+        text,
+        metadata: { videoId: id, transcriptCount: transcript.length },
+        extractionMethod: 'api',
+        extractionConfidence: transcript.length > 0 ? 0.93 : 0.6
+      },
       related: []
     };
   }
 
-  if (isTwitterUrl(url)) {
-    return extractTwitter(url);
-  }
-
-  if (isTikTokUrl(url)) {
-    return extractTikTok(url);
-  }
+  if (isTwitterUrl(url)) return extractTwitter(url);
+  if (isTikTokUrl(url)) return extractTikTok(url);
 
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
   const contentType = res.headers.get('content-type') || '';
+
+  if (!res.ok) {
+    if (options.browserRelayFallbackEnabled) {
+      const relay = await extractViaBrowserRelay(url);
+      return {
+        source: {
+          type: 'article',
+          title: relay.title,
+          text: relay.text,
+          metadata: relay.metadata,
+          extractionMethod: 'browser_relay',
+          extractionConfidence: relay.confidence ?? 0.55
+        },
+        related: []
+      };
+    }
+    throw new Error(`Fetch failed: ${res.status}`);
+  }
 
   if (isPdfUrl(url) || contentType.includes('application/pdf')) {
     const arr = await res.arrayBuffer();
     const { default: pdf } = await import('pdf-parse');
     const parsed = await pdf(Buffer.from(arr));
-    return { source: { type: 'pdf', text: parsed.text, metadata: { pages: parsed.numpages } }, related: [] };
+    return {
+      source: {
+        type: 'pdf',
+        text: parsed.text,
+        metadata: { pages: parsed.numpages },
+        extractionMethod: 'web_fetch',
+        extractionConfidence: 0.95
+      },
+      related: []
+    };
   }
 
   const html = await res.text();
   const dom = new JSDOM(html, { url });
   const reader = new Readability(dom.window.document);
   const article = reader.parse();
+  const readableText = article?.textContent?.trim() || '';
 
-  if (!article?.textContent?.trim()) {
+  const shouldFallback = shouldUseBrowserRelayFallback({
+    enabled: Boolean(options.browserRelayFallbackEnabled),
+    status: res.status,
+    html,
+    readableTextLength: readableText.length,
+    minReadableChars
+  });
+
+  if (shouldFallback) {
+    const relay = await extractViaBrowserRelay(url);
+    return {
+      source: {
+        type: 'article',
+        title: relay.title || article?.title || undefined,
+        text: relay.text,
+        metadata: { ...(relay.metadata || {}), fallbackReason: readableText.length < minReadableChars ? 'insufficient_readable_text' : 'blocked' },
+        extractionMethod: 'browser_relay',
+        extractionConfidence: relay.confidence ?? 0.7
+      },
+      related: []
+    };
+  }
+
+  if (!readableText) {
     const bodyText = dom.window.document.body?.textContent || '';
     return {
-      source: { type: 'article', title: dom.window.document.title, text: bodyText.trim() },
+      source: {
+        type: 'article',
+        title: dom.window.document.title,
+        text: bodyText.trim(),
+        extractionMethod: 'web_fetch',
+        extractionConfidence: bodyText.trim().length > 0 ? 0.45 : 0.2
+      },
       related: []
     };
   }
@@ -277,10 +389,12 @@ export async function extractFromUrl(url: string): Promise<ExtractedBundle> {
   return {
     source: {
       type: 'article',
-      title: article.title || undefined,
-      author: article.byline || undefined,
-      text: article.textContent,
-      metadata: { excerpt: article.excerpt, siteName: article.siteName }
+      title: article?.title || undefined,
+      author: article?.byline || undefined,
+      text: readableText,
+      metadata: { excerpt: article?.excerpt, siteName: article?.siteName },
+      extractionMethod: 'web_fetch',
+      extractionConfidence: 0.88
     },
     related: []
   };

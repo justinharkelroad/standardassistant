@@ -1,5 +1,12 @@
 import Database from 'better-sqlite3';
 
+function ensureColumn(db: Database.Database, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
@@ -75,11 +82,45 @@ export function runMigrations(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS ingest_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER,
+      source_url TEXT,
+      source_id INTEGER,
+      level TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      event_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(job_id) REFERENCES jobs(id),
+      FOREIGN KEY(source_id) REFERENCES sources(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS job_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id INTEGER,
+      metric_name TEXT NOT NULL,
+      metric_value REAL NOT NULL,
+      labels_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(job_id) REFERENCES jobs(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sources_url ON sources(url);
     CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_source_rel_unique ON source_relations(parent_source_id, child_source_id, relation_type);
+    CREATE INDEX IF NOT EXISTS idx_ingest_logs_job_id ON ingest_logs(job_id);
+    CREATE INDEX IF NOT EXISTS idx_job_metrics_job_id ON job_metrics(job_id);
   `);
+
+  ensureColumn(db, 'sources', 'extraction_method', 'TEXT');
+  ensureColumn(db, 'sources', 'extraction_confidence', 'REAL');
 
   try {
     db.pragma('journal_mode = WAL');

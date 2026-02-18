@@ -11,6 +11,8 @@ export interface SourceRecord {
   ingested_at: string;
   raw_metadata_json?: string | null;
   source_weight?: number;
+  extraction_method?: string | null;
+  extraction_confidence?: number | null;
 }
 
 export interface ChunkRecord {

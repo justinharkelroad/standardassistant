@@ -83,9 +83,14 @@ KB_BROWSER_RELAY_FALLBACK_ENABLED=false
 KB_MIN_READABLE_CHARS=300
 
 # Browser relay extractor command (required only if fallback is enabled)
-# Command should return JSON on stdout: {"title":"...","text":"...","metadata":{},"confidence":0.75}
-KB_BROWSER_RELAY_EXTRACT_CMD=/absolute/path/to/extract-via-relay
+# Command must return JSON on stdout: {"title":"...","text":"...","metadata":{},"confidence":0.75}
+# If omitted, app auto-uses ./scripts/browser-relay-extract.mjs when present.
+KB_BROWSER_RELAY_EXTRACT_CMD=/absolute/path/to/projects/personal-kb/scripts/browser-relay-extract.mjs
 KB_BROWSER_RELAY_TIMEOUT_MS=45000
+
+# Script transport to OpenClaw browser control endpoint
+# (defaults to http://127.0.0.1:3777/browser)
+OPENCLAW_BROWSER_ENDPOINT=http://127.0.0.1:3777/browser
 ```
 
 ---
@@ -126,9 +131,22 @@ npm test
 
 1. Enable fallback:
    - `npm run dev -- config set browserRelayFallbackEnabled true`
-2. Provide `KB_BROWSER_RELAY_EXTRACT_CMD` in `.env`
-3. Ensure that command can access an attached OpenClaw Chrome relay tab/session and emits JSON with extracted text.
-4. Run ingestion normally; pipeline will fallback when blocked or when extracted readable text is too short.
+2. Use bundled extractor command (recommended):
+   - `KB_BROWSER_RELAY_EXTRACT_CMD=/absolute/path/to/projects/personal-kb/scripts/browser-relay-extract.mjs`
+   - or omit it and rely on auto-detection of `./scripts/browser-relay-extract.mjs`.
+3. Attach Chrome tab to OpenClaw relay:
+   - Open Chrome on the target page.
+   - Click **OpenClaw Browser Relay** toolbar icon on that tab.
+   - Confirm badge shows **ON**.
+4. Ensure script can reach browser endpoint:
+   - default: `OPENCLAW_BROWSER_ENDPOINT=http://127.0.0.1:3777/browser`
+5. Validate extractor directly:
+   - `npm run browser-relay-extract -- https://example.com/article`
+   - Optional timeout: `npm run browser-relay-extract -- https://example.com/article --timeout-ms 60000`
+6. Run normal ingestion:
+   - `npm run dev -- ingest https://example.com/article`
+
+If relay is unavailable, extraction fails with actionable errors (endpoint unreachable, no attached Chrome relay tab, empty extracted text).
 
 ---
 

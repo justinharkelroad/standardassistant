@@ -4,6 +4,7 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { SourceType } from '../types.js';
+import { resolveBrowserRelayExtractCmd } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -122,11 +123,34 @@ export function shouldUseBrowserRelayFallback(params: {
 }
 
 export async function extractViaBrowserRelay(url: string): Promise<{ title?: string; text: string; metadata?: Record<string, unknown>; confidence?: number }> {
-  const cmd = process.env.KB_BROWSER_RELAY_EXTRACT_CMD;
-  if (!cmd) throw new Error('Browser relay extraction command not configured (KB_BROWSER_RELAY_EXTRACT_CMD)');
+  const cmd = resolveBrowserRelayExtractCmd();
+  if (!cmd) {
+    throw new Error(
+      'Browser relay extraction command not configured. Set KB_BROWSER_RELAY_EXTRACT_CMD or add executable scripts/browser-relay-extract.mjs.'
+    );
+  }
 
-  const { stdout } = await execFileAsync(cmd, [url], { timeout: Number(process.env.KB_BROWSER_RELAY_TIMEOUT_MS || 45000) });
-  const parsed = JSON.parse(stdout || '{}') as { title?: string; text?: string; metadata?: Record<string, unknown>; confidence?: number };
+  let stdout = '';
+  try {
+    ({ stdout } = await execFileAsync(cmd, [url, '--timeout-ms', String(Number(process.env.KB_BROWSER_RELAY_TIMEOUT_MS || 45000))], {
+      timeout: Number(process.env.KB_BROWSER_RELAY_TIMEOUT_MS || 45000)
+    }));
+  } catch (error: any) {
+    const hint = error?.code === 'ENOENT'
+      ? `Command not found: ${cmd}`
+      : error?.stderr
+        ? String(error.stderr)
+        : error?.message || String(error);
+    throw new Error(`Browser relay extractor failed. ${hint}`);
+  }
+
+  let parsed: { title?: string; text?: string; metadata?: Record<string, unknown>; confidence?: number };
+  try {
+    parsed = JSON.parse(stdout || '{}');
+  } catch {
+    throw new Error('Browser relay extractor returned invalid JSON. Expected {title,text,metadata,confidence}.');
+  }
+
   if (!parsed.text?.trim()) throw new Error('Browser relay extractor returned empty text');
   return { title: parsed.title, text: parsed.text, metadata: parsed.metadata || {}, confidence: parsed.confidence };
 }

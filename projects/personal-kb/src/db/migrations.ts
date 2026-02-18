@@ -78,6 +78,7 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_sources_url ON sources(url);
     CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_source_rel_unique ON source_relations(parent_source_id, child_source_id, relation_type);
   `);
 
   try {

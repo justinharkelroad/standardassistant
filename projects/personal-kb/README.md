@@ -1,6 +1,6 @@
-# personal-kb (Phase 1 MVP)
+# personal-kb (Phase 2)
 
-Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube ingestion, and Discord command handlers.
+Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTok ingestion, relation graphing, and Discord command handlers.
 
 ## What’s implemented
 
@@ -10,20 +10,20 @@ Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube ingesti
   - Generic article URLs (Readability + JSDOM)
   - PDFs (via `pdf-parse`)
   - YouTube transcripts (via `youtube-transcript`)
+  - X/Twitter status extraction with thread/quote traversal (best-effort)
+  - TikTok extraction (caption/metadata + transcript/fallback text)
+- Relation graph population in `source_relations`:
+  - `thread_reply`, `quote_of`, `links_to`
+- Link chaining:
+  - Outbound links in tweets are auto-ingested and linked as `links_to`
+- Better social metadata capture:
+  - author handle/name, post timestamp, engagement counts (when available)
 - Embeddings + vector retrieval:
   - Preferred: `sqlite-vec` (if `SQLITE_VEC_PATH` points to `vec0` extension)
   - Fallback: embeddings stored as JSON in SQLite + cosine similarity in app
-  - Embeddings provider:
-    - OpenAI if `OPENAI_API_KEY` exists
-    - Deterministic local hash embedding fallback (no key needed)
-- Retrieval ranking with weighted formula:
-  - `semantic_similarity * 0.65 + recency_boost * 0.20 + source_weight * 0.15`
-- Discord handlers:
-  - Slash commands: `/ingest`, `/askkb`
-  - Message commands: `!ingest <url>`, `!askkb <question>`
-- Basic tests:
-  - Chunking behavior
-  - Ranking formula + recency decay
+- Configurable ranking controls:
+  - Source weight profiles: `balanced`, `research`, `social`
+  - Optional JSON overrides for source/type weights and ranking coefficients
 
 ---
 
@@ -45,6 +45,12 @@ EMBEDDING_DIMS=384
 # Optional sqlite-vec dynamic extension path
 SQLITE_VEC_PATH=/opt/homebrew/lib/vec0.dylib
 
+# Ranking controls
+KB_SOURCE_WEIGHT_PROFILE=balanced
+KB_SOURCE_WEIGHT_OVERRIDES_JSON={"twitter":0.9,"tiktok":0.8}
+KB_RANKING_WEIGHTS_JSON={"semantic":0.65,"recency":0.2,"source":0.15}
+KB_RECENCY_HALF_LIFE_DAYS=30
+
 # Discord (for bot mode)
 DISCORD_BOT_TOKEN=
 DISCORD_CLIENT_ID=
@@ -59,6 +65,8 @@ DISCORD_GUILD_ID=
 npm run dev -- ingest https://example.com/article
 npm run dev -- ingest https://arxiv.org/pdf/1706.03762.pdf
 npm run dev -- ingest https://www.youtube.com/watch?v=dQw4w9WgXcQ
+npm run dev -- ingest https://x.com/user/status/1234567890
+npm run dev -- ingest https://www.tiktok.com/@user/video/1234567890
 ```
 
 ### 2) Ask the KB
@@ -73,8 +81,6 @@ npm run dev -- ask "What are the key points about transformers?"
 npm run dev -- discord
 ```
 
-This registers guild slash commands and starts bot listeners.
-
 ### 4) Tests
 
 ```bash
@@ -83,24 +89,12 @@ npm test
 
 ---
 
-## Known gaps / next for Phase 2 (X/Twitter + TikTok)
+## Notes / known limitations
 
-### X/Twitter thread support
-- Add resolver for status URL → thread expansion (replies/quotes)
-- Preserve relation graph via `source_relations` (`thread_reply`, `quote_of`, `links_to`)
-- Link-chaining: parse outbound URLs from tweets and enqueue linked article ingestion
-- Better metadata quality (author handle, post timestamp, engagement)
-
-### TikTok support
-- Add extractor for caption/transcript/description/music metadata
-- Handle alternate URL forms + short-links and redirects
-- Robust transcript fallback strategy when subtitles are unavailable
-- Improve source weighting profile for short-form content reliability
-
----
-
-## Implementation notes
-
-- MVP is intentionally lightweight and synchronous for local operation.
-- `jobs` table is included and used for ingestion state tracking (`running/done/failed`).
-- Entity/relation extraction tables exist in schema; extraction logic can be layered in Phase 2.
+- Twitter/X traversal is best-effort and relies on publicly reachable syndication data.
+  - Deep/full thread expansion depends on what IDs are exposed in the payload.
+  - Protected/deleted/age-restricted posts may fail.
+- TikTok transcript availability is inconsistent and depends on page payloads.
+  - Fallbacks use caption + available page text when transcript data is absent.
+- Link chaining currently starts from social posts (especially tweets) and ingests discovered outbound URLs as direct children.
+- Ingestion is synchronous; very large relation graphs may take longer to complete.

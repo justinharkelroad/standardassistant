@@ -1,4 +1,4 @@
-export type SourceType = 'article' | 'pdf' | 'youtube' | 'unknown';
+export type SourceType = 'article' | 'pdf' | 'youtube' | 'twitter' | 'tiktok' | 'unknown';
 
 export interface SourceRecord {
   id: number;

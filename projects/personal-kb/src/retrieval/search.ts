@@ -1,16 +1,13 @@
 import { DBContext } from '../db/client.js';
 import { RetrievedChunk } from '../types.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
+import { finalRank, recencyHalfLifeDays } from './ranking.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function recencyBoost(ingestedAt: string, halfLifeDays = 30): number {
+export function recencyBoost(ingestedAt: string, halfLifeDays = recencyHalfLifeDays()): number {
   const ageDays = Math.max(0, (Date.now() - new Date(ingestedAt).getTime()) / DAY_MS);
   return Math.pow(0.5, ageDays / halfLifeDays);
-}
-
-export function finalRank(semantic: number, recency: number, sourceWeight: number): number {
-  return semantic * 0.65 + recency * 0.2 + sourceWeight * 0.15;
 }
 
 export async function searchKB(ctx: DBContext, query: string, limit = 5): Promise<RetrievedChunk[]> {

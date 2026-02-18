@@ -111,7 +111,16 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
     linkRelation(ctx, options.parentSourceId, sourceId, options.relationType);
   }
 
-  const chunks = chunkText(extracted.text || '');
+  const extractedText = extracted.text || '';
+  let chunks = chunkText(extractedText);
+  if (chunks.length === 0) {
+    const trimmed = extractedText.trim();
+    if (trimmed.length > 0) {
+      chunks = [trimmed];
+    } else {
+      throw new Error('Extraction produced empty text; refusing to complete ingest with zero chunks.');
+    }
+  }
 
   const insertChunk = db.prepare(
     'INSERT INTO chunks (source_id, chunk_index, text, token_count, embedding_json) VALUES (?, ?, ?, ?, ?)'

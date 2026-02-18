@@ -88,8 +88,9 @@ KB_MIN_READABLE_CHARS=300
 KB_BROWSER_RELAY_EXTRACT_CMD=/absolute/path/to/projects/personal-kb/scripts/browser-relay-extract.mjs
 KB_BROWSER_RELAY_TIMEOUT_MS=45000
 
-# Script transport to OpenClaw browser control endpoint
-# (defaults to http://127.0.0.1:3777/browser)
+# Optional: force HTTP endpoint transport for relay script.
+# Normally the script uses local CLI (`openclaw browser ... --json`) and this is not needed.
+# Only set when you intentionally want endpoint mode.
 OPENCLAW_BROWSER_ENDPOINT=http://127.0.0.1:3777/browser
 ```
 
@@ -138,8 +139,9 @@ npm test
    - Open Chrome on the target page.
    - Click **OpenClaw Browser Relay** toolbar icon on that tab.
    - Confirm badge shows **ON**.
-4. Ensure script can reach browser endpoint:
-   - default: `OPENCLAW_BROWSER_ENDPOINT=http://127.0.0.1:3777/browser`
+4. Ensure Chrome relay is actually attached:
+   - `openclaw browser --browser-profile chrome tabs --json`
+   - If `tabs` is empty, no relay tab is attached yet.
 5. Validate extractor directly:
    - `npm run browser-relay-extract -- https://example.com/article`
    - Optional timeout: `npm run browser-relay-extract -- https://example.com/article --timeout-ms 60000`
@@ -147,6 +149,22 @@ npm test
    - `npm run dev -- ingest https://example.com/article`
 
 If relay is unavailable, extraction fails with actionable errors (endpoint unreachable, no attached Chrome relay tab, empty extracted text).
+
+### Quick troubleshooting: "No attached Chrome relay tab was found"
+
+This is the most common failure mode for JS-heavy pages (for example `standardplaybook.com`, `x.com`, or `tiktok.com`).
+
+1. Open the page in **Chrome**.
+2. Click the **OpenClaw Browser Relay** toolbar icon on that exact tab.
+3. Confirm the badge shows **ON**.
+4. Verify attachment:
+   - `openclaw browser --browser-profile chrome tabs --json`
+5. Re-run extractor/ingest.
+
+Notes:
+- The bundled extractor now uses local CLI transport by default (`openclaw browser ... --json`).
+- `OPENCLAW_BROWSER_ENDPOINT` is optional; only set it when you intentionally want endpoint mode.
+- If ingestion completes with zero chunks, pipeline now fails explicitly instead of silently marking done.
 
 ---
 

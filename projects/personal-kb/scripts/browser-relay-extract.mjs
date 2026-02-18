@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_HTTP_ENDPOINT = 'http://127.0.0.1:3777/browser';
+const OPENCLAW_BROWSER_CMD = process.env.OPENCLAW_BROWSER_CMD || 'openclaw';
 
 function parseArgs(argv) {
   const args = { url: undefined, timeoutMs: DEFAULT_TIMEOUT_MS };
@@ -27,33 +33,13 @@ function fail(message, details = {}) {
   throw err;
 }
 
-async function callBrowserEndpoint(endpoint, payload, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+function isValidHttpUrl(value) {
+  if (!value) return false;
   try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-
-    const text = await res.text();
-    let json;
-    try {
-      json = text ? JSON.parse(text) : {};
-    } catch {
-      fail('OpenClaw browser endpoint returned non-JSON response', { status: res.status, text: text.slice(0, 300) });
-    }
-
-    if (!res.ok) {
-      fail('OpenClaw browser endpoint request failed', { status: res.status, body: json });
-    }
-
-    return json;
-  } finally {
-    clearTimeout(timer);
+    const u = new URL(value);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -94,72 +80,198 @@ function extractEvaluatePayload(payload) {
   return result;
 }
 
+async function callBrowserEndpoint(endpoint, payload, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    const text = await res.text();
+    let json;
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      fail('OpenClaw browser endpoint returned non-JSON response', { status: res.status, text: text.slice(0, 300) });
+    }
+
+    if (!res.ok) {
+      fail('OpenClaw browser endpoint request failed', { status: res.status, body: json });
+    }
+
+    return json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callBrowserCli(commandArgs, timeoutMs) {
+  const args = ['browser', '--json', '--browser-profile', 'chrome', ...commandArgs];
+  let stdout;
+  let stderr;
+
+  try {
+    ({ stdout, stderr } = await execFileAsync(OPENCLAW_BROWSER_CMD, args, {
+      timeout: timeoutMs,
+      maxBuffer: 5 * 1024 * 1024,
+      encoding: 'utf8'
+    }));
+  } catch (error) {
+    const msg = error?.stderr || error?.message || String(error);
+    fail('Failed to run local OpenClaw browser CLI command', {
+      command: `${OPENCLAW_BROWSER_CMD} ${args.join(' ')}`,
+      cause: String(msg).trim().slice(0, 500)
+    });
+  }
+
+  const raw = (stdout || '').trim();
+  if (!raw) return {};
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    fail('OpenClaw browser CLI returned non-JSON output', {
+      command: `${OPENCLAW_BROWSER_CMD} ${args.join(' ')}`,
+      stdout: raw.slice(0, 500),
+      stderr: String(stderr || '').slice(0, 500)
+    });
+  }
+}
+
+function relayAttachError(details = {}) {
+  fail(
+    'No attached Chrome relay tab was found. Open Chrome on the target page, click the OpenClaw Browser Relay toolbar icon on that tab (badge ON), then retry.',
+    details
+  );
+}
+
 async function main() {
   const { url, timeoutMs } = parseArgs(process.argv.slice(2));
   if (!url) {
     fail('Usage: browser-relay-extract.mjs <url> [--timeout-ms <ms>]');
   }
 
-  const endpoint = process.env.OPENCLAW_BROWSER_ENDPOINT || 'http://127.0.0.1:3777/browser';
+  const configuredEndpoint = process.env.OPENCLAW_BROWSER_ENDPOINT;
+  const endpoint = configuredEndpoint || DEFAULT_HTTP_ENDPOINT;
+  const canUseEndpoint = isValidHttpUrl(configuredEndpoint);
+
+  const transport = canUseEndpoint ? 'endpoint' : 'cli';
 
   let tabId;
-  try {
-    const tabsResp = await callBrowserEndpoint(endpoint, { action: 'tabs', profile: 'chrome', target: 'host' }, timeoutMs);
-    tabId = pickTabId(pickResult(tabsResp), url);
-  } catch (err) {
-    fail(
-      'Could not reach OpenClaw browser endpoint. Ensure OpenClaw is running and OPENCLAW_BROWSER_ENDPOINT is correct.',
-      { endpoint, cause: String(err?.message || err) }
+
+  if (transport === 'endpoint') {
+    try {
+      const tabsResp = await callBrowserEndpoint(endpoint, { action: 'tabs', profile: 'chrome', target: 'host' }, timeoutMs);
+      tabId = pickTabId(pickResult(tabsResp), url);
+    } catch (err) {
+      fail(
+        'Could not reach configured OpenClaw browser endpoint. Verify OPENCLAW_BROWSER_ENDPOINT or unset it to use local CLI transport.',
+        { endpoint, cause: String(err?.message || err) }
+      );
+    }
+
+    if (!tabId) relayAttachError({ endpoint, transport });
+
+    await callBrowserEndpoint(
+      endpoint,
+      { action: 'navigate', profile: 'chrome', target: 'host', targetId: tabId, targetUrl: url },
+      timeoutMs
     );
-  }
 
-  if (!tabId) {
-    fail(
-      'No attached Chrome relay tab was found. Open Chrome, click the OpenClaw Browser Relay toolbar icon on a tab (badge ON), then retry.',
-      { endpoint }
-    );
-  }
-
-  await callBrowserEndpoint(
-    endpoint,
-    { action: 'navigate', profile: 'chrome', target: 'host', targetId: tabId, targetUrl: url },
-    timeoutMs
-  );
-
-  const evalResp = await callBrowserEndpoint(
-    endpoint,
-    {
-      action: 'act',
-      profile: 'chrome',
-      target: 'host',
-      targetId: tabId,
-      request: {
-        kind: 'evaluate',
+    const evalResp = await callBrowserEndpoint(
+      endpoint,
+      {
+        action: 'act',
+        profile: 'chrome',
+        target: 'host',
         targetId: tabId,
-        fn: `() => {
-          const title = document.title || '';
-          const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
-          return {
-            title,
-            text,
-            metadata: {
-              url: location.href,
-              byline: document.querySelector('meta[name="author"]')?.getAttribute('content') || null,
-              source: 'openclaw-browser-relay'
-            }
-          };
-        }`
+        request: {
+          kind: 'evaluate',
+          targetId: tabId,
+          fn: `() => {
+            const title = document.title || '';
+            const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+            return {
+              title,
+              text,
+              metadata: {
+                url: location.href,
+                byline: document.querySelector('meta[name="author"]')?.getAttribute('content') || null,
+                source: 'openclaw-browser-relay'
+              }
+            };
+          }`
+        }
+      },
+      timeoutMs
+    );
+
+    const extracted = extractEvaluatePayload(evalResp);
+    const text = typeof extracted?.text === 'string' ? extracted.text.trim() : '';
+    if (!text) {
+      fail('Relay extraction succeeded but returned empty text. Ensure the page is fully loaded and accessible in the attached tab.', {
+        url,
+        tabId,
+        transport
+      });
+    }
+
+    const output = {
+      title: typeof extracted?.title === 'string' ? extracted.title : '',
+      text,
+      metadata: {
+        ...(extracted?.metadata && typeof extracted.metadata === 'object' ? extracted.metadata : {}),
+        endpoint,
+        tabId,
+        transport
+      },
+      confidence: 0.72
+    };
+
+    process.stdout.write(`${JSON.stringify(output)}\n`);
+    return;
+  }
+
+  if (configuredEndpoint && !canUseEndpoint) {
+    process.stderr.write(`[browser-relay-extract] OPENCLAW_BROWSER_ENDPOINT is invalid (${configuredEndpoint}); using local OpenClaw CLI transport instead.\n`);
+  }
+
+  const tabsResp = await callBrowserCli(['tabs'], timeoutMs);
+  tabId = pickTabId(pickResult(tabsResp), url);
+  if (!tabId) {
+    relayAttachError({ transport, browserProfile: 'chrome', note: 'Run: openclaw browser --browser-profile chrome tabs --json' });
+  }
+
+  await callBrowserCli(['navigate', url, '--target-id', String(tabId)], timeoutMs);
+
+  const evaluateFn = `() => {
+    const title = document.title || '';
+    const text = (document.body?.innerText || '').replace(/\\s+/g, ' ').trim();
+    return {
+      title,
+      text,
+      metadata: {
+        url: location.href,
+        byline: document.querySelector('meta[name="author"]')?.getAttribute('content') || null,
+        source: 'openclaw-browser-relay'
       }
-    },
-    timeoutMs
-  );
+    };
+  }`;
+
+  const evalResp = await callBrowserCli(['evaluate', '--target-id', String(tabId), '--fn', evaluateFn], timeoutMs);
 
   const extracted = extractEvaluatePayload(evalResp);
   const text = typeof extracted?.text === 'string' ? extracted.text.trim() : '';
   if (!text) {
     fail('Relay extraction succeeded but returned empty text. Ensure the page is fully loaded and accessible in the attached tab.', {
       url,
-      tabId
+      tabId,
+      transport
     });
   }
 
@@ -168,8 +280,9 @@ async function main() {
     text,
     metadata: {
       ...(extracted?.metadata && typeof extracted.metadata === 'object' ? extracted.metadata : {}),
-      endpoint,
-      tabId
+      tabId,
+      transport,
+      browserProfile: 'chrome'
     },
     confidence: 0.72
   };

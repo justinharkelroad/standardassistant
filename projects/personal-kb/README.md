@@ -1,29 +1,49 @@
-# personal-kb (Phase 2)
+# personal-kb (Phase 3)
 
-Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTok ingestion, relation graphing, and Discord command handlers.
+Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTok ingestion, relation graphing, Discord command handlers, extraction provenance, and observability.
 
 ## What’s implemented
 
-- SQLite schema + migrations for:
-  - `sources`, `source_relations`, `chunks`, `entities`, `chunk_entities`, `summaries`, `jobs`
+### Existing (Phases 1-2 preserved)
+
+- SQLite schema + migrations for sources/chunks/entities/summaries/jobs/relation graph
 - Ingestion pipeline:
   - Generic article URLs (Readability + JSDOM)
-  - PDFs (via `pdf-parse`)
-  - YouTube transcripts (via `youtube-transcript`)
-  - X/Twitter status extraction with thread/quote traversal (best-effort)
+  - PDFs (`pdf-parse`)
+  - YouTube transcripts (`youtube-transcript`)
+  - X/Twitter status extraction + thread/quote traversal
   - TikTok extraction (caption/metadata + transcript/fallback text)
-- Relation graph population in `source_relations`:
-  - `thread_reply`, `quote_of`, `links_to`
-- Link chaining:
-  - Outbound links in tweets are auto-ingested and linked as `links_to`
-- Better social metadata capture:
-  - author handle/name, post timestamp, engagement counts (when available)
-- Embeddings + vector retrieval:
-  - Preferred: `sqlite-vec` (if `SQLITE_VEC_PATH` points to `vec0` extension)
-  - Fallback: embeddings stored as JSON in SQLite + cosine similarity in app
-- Configurable ranking controls:
-  - Source weight profiles: `balanced`, `research`, `social`
-  - Optional JSON overrides for source/type weights and ranking coefficients
+- Relation graph population (`thread_reply`, `quote_of`, `links_to`)
+- Embeddings + vector retrieval (`sqlite-vec` optional fallback to JSON cosine)
+- Configurable ranking controls
+
+### New (Phase 3)
+
+1. **Config-gated browser relay fallback for paywalled/insufficient article extraction**
+   - Primary extraction uses normal web fetch + Readability.
+   - Fallback can invoke a browser-relay extractor command (intended for OpenClaw Chrome relay session) when blocked or low readable text.
+2. **Extraction provenance + confidence tracking**
+   - `sources.extraction_method` (e.g. `web_fetch`, `browser_relay`, `api`)
+   - `sources.extraction_confidence` (0-1 heuristic)
+3. **Optional auto-posting ingestion summaries to Discord**
+   - Per-ingest summary text includes type/method/confidence/chunk count/preview.
+4. **Admin/config controls**
+   - Discord text commands:
+     - `!kb settings`
+     - `!kb summary on`
+     - `!kb summary off`
+     - `!kb summary channel <#channelId|channelId>`
+   - Slash command: `/kbconfig` with actions (`show`, `autosummary-on`, `autosummary-off`, `set-summary-channel`)
+   - CLI config/status:
+     - `npm run dev -- status`
+     - `npm run dev -- config set <key> <value>`
+5. **Observability**
+   - Structured ingest logs table: `ingest_logs`
+   - Job metrics table: `job_metrics`
+   - Health/status output via CLI `status` command
+6. **Tests**
+   - Fallback routing behavior
+   - Summary posting config command behavior
 
 ---
 
@@ -55,33 +75,46 @@ KB_RECENCY_HALF_LIFE_DAYS=30
 DISCORD_BOT_TOKEN=
 DISCORD_CLIENT_ID=
 DISCORD_GUILD_ID=
+
+# Phase 3 settings defaults
+KB_AUTO_SUMMARY_POST_ENABLED=false
+KB_SUMMARY_CHANNEL_ID=
+KB_BROWSER_RELAY_FALLBACK_ENABLED=false
+KB_MIN_READABLE_CHARS=300
+
+# Browser relay extractor command (required only if fallback is enabled)
+# Command should return JSON on stdout: {"title":"...","text":"...","metadata":{},"confidence":0.75}
+KB_BROWSER_RELAY_EXTRACT_CMD=/absolute/path/to/extract-via-relay
+KB_BROWSER_RELAY_TIMEOUT_MS=45000
 ```
+
+---
 
 ## Run
 
-### 1) Ingest a source
+### Ingest / Ask
 
 ```bash
 npm run dev -- ingest https://example.com/article
-npm run dev -- ingest https://arxiv.org/pdf/1706.03762.pdf
-npm run dev -- ingest https://www.youtube.com/watch?v=dQw4w9WgXcQ
-npm run dev -- ingest https://x.com/user/status/1234567890
-npm run dev -- ingest https://www.tiktok.com/@user/video/1234567890
-```
-
-### 2) Ask the KB
-
-```bash
 npm run dev -- ask "What are the key points about transformers?"
 ```
 
-### 3) Discord bot mode
+### Discord bot
 
 ```bash
 npm run dev -- discord
 ```
 
-### 4) Tests
+### Status / Config
+
+```bash
+npm run dev -- status
+npm run dev -- config set autoSummaryPostEnabled true
+npm run dev -- config set summaryChannelId 123456789012345678
+npm run dev -- config set browserRelayFallbackEnabled true
+```
+
+### Tests
 
 ```bash
 npm test
@@ -89,12 +122,24 @@ npm test
 
 ---
 
-## Notes / known limitations
+## Browser relay runbook (concise)
 
-- Twitter/X traversal is best-effort and relies on publicly reachable syndication data.
-  - Deep/full thread expansion depends on what IDs are exposed in the payload.
-  - Protected/deleted/age-restricted posts may fail.
-- TikTok transcript availability is inconsistent and depends on page payloads.
-  - Fallbacks use caption + available page text when transcript data is absent.
-- Link chaining currently starts from social posts (especially tweets) and ingests discovered outbound URLs as direct children.
-- Ingestion is synchronous; very large relation graphs may take longer to complete.
+1. Enable fallback:
+   - `npm run dev -- config set browserRelayFallbackEnabled true`
+2. Provide `KB_BROWSER_RELAY_EXTRACT_CMD` in `.env`
+3. Ensure that command can access an attached OpenClaw Chrome relay tab/session and emits JSON with extracted text.
+4. Run ingestion normally; pipeline will fallback when blocked or when extracted readable text is too short.
+
+---
+
+## Known limitations + security notes
+
+- Browser relay fallback is **disabled by default** and only runs when explicitly enabled.
+- This repo calls a configured external command for relay extraction, so security depends on:
+  - command path integrity,
+  - output validation,
+  - relay session access controls.
+- If relay session is not attached/authenticated, fallback may fail.
+- Confidence scores are heuristic (not model-calibrated).
+- Auto-summary posts may expose URL/title/preview in Discord; use private channels where appropriate.
+- Ingestion pipeline remains synchronous and can be slow for deep relation graphs.

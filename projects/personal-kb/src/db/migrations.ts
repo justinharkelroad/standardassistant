@@ -122,6 +122,14 @@ export function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'sources', 'extraction_method', 'TEXT');
   ensureColumn(db, 'sources', 'extraction_confidence', 'REAL');
 
+  // Phase 4: collection support
+  ensureColumn(db, 'sources', 'collection', "TEXT NOT NULL DEFAULT 'default'");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sources_collection ON sources(collection);
+    CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(type);
+    CREATE INDEX IF NOT EXISTS idx_sources_canonical_url ON sources(canonical_url);
+  `);
+
   try {
     db.pragma('journal_mode = WAL');
   } catch {

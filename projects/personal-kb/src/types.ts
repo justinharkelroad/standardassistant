@@ -13,6 +13,7 @@ export interface SourceRecord {
   source_weight?: number;
   extraction_method?: string | null;
   extraction_confidence?: number | null;
+  collection: string;
 }
 
 export interface ChunkRecord {
@@ -31,4 +32,13 @@ export interface RetrievedChunk extends ChunkRecord {
   final_score: number;
   source_url: string;
   source_title: string | null;
+  source_type: SourceType;
+  collection: string;
+}
+
+export interface AskFilters {
+  collection?: string;
+  domain?: string;
+  source?: SourceType;
+  url?: string;
 }

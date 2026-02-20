@@ -1,6 +1,6 @@
-# personal-kb (Phase 3)
+# personal-kb (Phase 4)
 
-Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTok ingestion, relation graphing, Discord command handlers, extraction provenance, and observability.
+Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTok ingestion, relation graphing, Discord command handlers, extraction provenance, observability, **collections**, and **query filters**.
 
 ## What’s implemented
 
@@ -17,7 +17,7 @@ Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTo
 - Embeddings + vector retrieval (`sqlite-vec` optional fallback to JSON cosine)
 - Configurable ranking controls
 
-### New (Phase 3)
+### Phase 3
 
 1. **Config-gated browser relay fallback for paywalled/insufficient article extraction**
    - Primary extraction uses normal web fetch + Readability.
@@ -44,6 +44,37 @@ Personal knowledge base (RAG-style) with SQLite storage, URL/PDF/YouTube/X/TikTo
 6. **Tests**
    - Fallback routing behavior
    - Summary posting config command behavior
+
+### New (Phase 4)
+
+1. **Collections**
+   - Every source belongs to a collection (default: `default`).
+   - Specify on ingest: `--collection <name>`
+   - Query by collection: `--collection <name>`
+   - List all collections: `npm run dev -- collections`
+2. **Query filters for `ask`**
+   - `--collection <name>` — filter to a specific collection
+   - `--domain <domain>` — filter by source domain (normalized, strips protocol/www)
+   - `--source <type>` — filter by source type (`article`, `pdf`, `youtube`, `twitter`, `tiktok`)
+   - `--url <exact-url>` — filter to a specific source URL
+   - All filters combine with AND semantics. Hard filters apply before ranking/scoring.
+3. **Improved answer output**
+   - **Answer** section: synthesized bullet points with inline citation references
+   - **Citations** section: numbered source list with title and URL
+   - **Retrieval context** section: active filters, candidate chunk/source counts
+   - Low-confidence warning when average score is weak
+   - Helpful zero-result messages with suggested commands
+4. **Enhanced `status` command**
+   - Shows collection breakdown (source count per collection)
+   - Shows source type breakdown
+5. **New `collections` command**
+   - Lists all collections with source and chunk counts
+6. **Tests**
+   - Collection persistence on ingest
+   - `--collection` filter excludes other collections
+   - `--domain` filter isolates domains
+   - Combined filters (collection + domain + source)
+   - Backward compatibility: plain `ask`/`ingest` still work
 
 ---
 
@@ -98,11 +129,59 @@ OPENCLAW_BROWSER_ENDPOINT=http://127.0.0.1:3777/browser
 
 ## Run
 
-### Ingest / Ask
+### Ingest
 
 ```bash
+# Basic ingest (goes to "default" collection)
 npm run dev -- ingest https://example.com/article
+
+# Ingest into a named collection
+npm run dev -- ingest https://standardplaybook.com --collection standardplaybook
+npm run dev -- ingest https://arxiv.org/pdf/1234.5678 --collection research
+```
+
+### Ask (query with filters)
+
+```bash
+# Basic ask (searches all collections)
 npm run dev -- ask "What are the key points about transformers?"
+
+# Filter by collection
+npm run dev -- ask "What are the offers?" --collection standardplaybook
+
+# Filter by domain
+npm run dev -- ask "What are the offers?" --domain standardplaybook.com
+
+# Filter by source type
+npm run dev -- ask "What are the offers?" --source article
+
+# Combine filters (AND semantics)
+npm run dev -- ask "What are the offers?" --collection standardplaybook --domain standardplaybook.com --source article
+
+# Filter by exact URL
+npm run dev -- ask "What does this say?" --url https://standardplaybook.com/offers
+```
+
+Filters apply as hard filters before ranking. Existing ranking weights are preserved.
+
+Domain matching normalizes the host: strips protocol, `www.`, lowercases. `--domain standardplaybook.com` matches `https://www.standardplaybook.com/...`.
+
+### Collections
+
+```bash
+# List all collections with source/chunk counts
+npm run dev -- collections
+```
+
+Output:
+```
+Collections:
+
+  Name                Sources  Chunks
+  ─────────────────   ───────  ──────
+  standardplaybook          5      42
+  research                  3      28
+  default                   2      12
 ```
 
 ### Discord bot
@@ -114,7 +193,9 @@ npm run dev -- discord
 ### Status / Config
 
 ```bash
+# Status now includes collection and source type breakdowns
 npm run dev -- status
+
 npm run dev -- config set autoSummaryPostEnabled true
 npm run dev -- config set summaryChannelId 123456789012345678
 npm run dev -- config set browserRelayFallbackEnabled true

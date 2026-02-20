@@ -12,6 +12,7 @@ interface IngestOptions {
   parentSourceId?: number;
   relationType?: RelationType;
   jobId?: number;
+  collection?: string;
   onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void>;
 }
 
@@ -75,10 +76,11 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
   const extracted = extractedBundle.source;
   const sourceWeight = sourceWeightFor(extracted.type);
 
+  const collection = options.collection || 'default';
   const src = db
     .prepare(
-      `INSERT INTO sources (type, url, canonical_url, title, author, published_at, raw_metadata_json, source_weight, extraction_method, extraction_confidence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sources (type, url, canonical_url, title, author, published_at, raw_metadata_json, source_weight, extraction_method, extraction_confidence, collection)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       extracted.type,
@@ -90,7 +92,8 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
       JSON.stringify(extracted.metadata || {}),
       sourceWeight,
       extracted.extractionMethod,
-      extracted.extractionConfidence
+      extracted.extractionConfidence,
+      collection
     );
 
   const sourceId = Number(src.lastInsertRowid);
@@ -164,6 +167,7 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
       parentSourceId: sourceId,
       relationType: rel.relationType,
       jobId: options.jobId,
+      collection,
       onIngested: options.onIngested
     });
   }
@@ -174,20 +178,20 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
 export async function ingestUrl(
   ctx: DBContext,
   url: string,
-  options?: { onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void> }
+  options?: { collection?: string; onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void> }
 ): Promise<number> {
   const { db } = ctx;
 
   const job = db
     .prepare('INSERT INTO jobs (job_type, status, payload_json) VALUES (?, ?, ?)')
-    .run('ingest', 'running', JSON.stringify({ url }));
+    .run('ingest', 'running', JSON.stringify({ url, collection: options?.collection }));
 
   const jobId = Number(job.lastInsertRowid);
   const started = Date.now();
 
   try {
     logIngestEvent(ctx, { jobId, sourceUrl: url, eventType: 'job_started', event: { url } });
-    const sourceId = await ingestSingle(ctx, url, { visited: new Set<string>(), jobId, onIngested: options?.onIngested });
+    const sourceId = await ingestSingle(ctx, url, { visited: new Set<string>(), jobId, collection: options?.collection, onIngested: options?.onIngested });
     db.prepare('UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run('done', jobId);
     recordJobMetric(ctx, { jobId, metricName: 'job_duration_ms', metricValue: Date.now() - started });
     logIngestEvent(ctx, { jobId, sourceId, sourceUrl: url, eventType: 'job_completed' });

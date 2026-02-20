@@ -11,12 +11,18 @@ const execFileAsync = promisify(execFile);
 export type RelationType = 'thread_reply' | 'quote_of' | 'links_to';
 export type ExtractionMethod = 'web_fetch' | 'browser_relay' | 'api';
 
+export interface ContentSection {
+  title: string;
+  body: string;
+}
+
 export interface ExtractedContent {
   type: SourceType;
   title?: string;
   author?: string;
   publishedAt?: string;
   text: string;
+  sections?: ContentSection[];
   metadata?: Record<string, unknown>;
   extractionMethod: ExtractionMethod;
   extractionConfidence: number;
@@ -307,6 +313,45 @@ async function extractTikTok(url: string): Promise<ExtractedBundle> {
   };
 }
 
+export function extractSections(html: string, baseUrl?: string): ContentSection[] {
+  const dom = new JSDOM(html, baseUrl ? { url: baseUrl } : undefined);
+  const doc = dom.window.document;
+
+  // Walk through top-level children of body (or article root)
+  const root = doc.querySelector('article') || doc.body;
+  if (!root) return [];
+
+  const sections: ContentSection[] = [];
+  let currentTitle = '';
+  let currentBody: string[] = [];
+
+  for (const node of Array.from(root.childNodes)) {
+    const el = node as Element;
+    const tag = el.tagName?.toLowerCase() || '';
+
+    if (/^h[1-6]$/.test(tag)) {
+      // Flush previous section
+      const bodyText = currentBody.join(' ').replace(/\s+/g, ' ').trim();
+      if (bodyText) {
+        sections.push({ title: currentTitle, body: bodyText });
+      }
+      currentTitle = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      currentBody = [];
+    } else {
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text) currentBody.push(text);
+    }
+  }
+
+  // Flush last section
+  const lastBody = currentBody.join(' ').replace(/\s+/g, ' ').trim();
+  if (lastBody) {
+    sections.push({ title: currentTitle, body: lastBody });
+  }
+
+  return sections.filter((s) => s.body.length >= 20);
+}
+
 export async function extractFromUrl(url: string, options: ExtractionOptions = {}): Promise<ExtractedBundle> {
   const minReadableChars = options.minReadableChars || Number(process.env.KB_MIN_READABLE_CHARS || 300);
 
@@ -410,12 +455,15 @@ export async function extractFromUrl(url: string, options: ExtractionOptions = {
     };
   }
 
+  const sections = article?.content ? extractSections(article.content, url) : undefined;
+
   return {
     source: {
       type: 'article',
       title: article?.title || undefined,
       author: article?.byline || undefined,
       text: readableText,
+      sections: sections && sections.length > 0 ? sections : undefined,
       metadata: { excerpt: article?.excerpt, siteName: article?.siteName },
       extractionMethod: 'web_fetch',
       extractionConfidence: 0.88

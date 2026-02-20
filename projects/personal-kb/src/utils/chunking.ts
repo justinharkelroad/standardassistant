@@ -17,3 +17,26 @@ export function chunkText(text: string, maxTokens = 220, overlap = 40): string[]
 
   return chunks;
 }
+
+export interface SectionChunk {
+  text: string;
+  sectionTitle: string | null;
+}
+
+export function chunkBySections(
+  sections: Array<{ title: string; body: string }>,
+  maxTokens = 220,
+  overlap = 40
+): SectionChunk[] {
+  const result: SectionChunk[] = [];
+
+  for (const section of sections) {
+    const subChunks = chunkText(section.body, maxTokens, overlap);
+    const title = section.title || null;
+    for (const text of subChunks) {
+      result.push({ text, sectionTitle: title });
+    }
+  }
+
+  return result;
+}

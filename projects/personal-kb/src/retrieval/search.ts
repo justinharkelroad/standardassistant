@@ -2,6 +2,7 @@ import { DBContext } from '../db/client.js';
 import { AskFilters, RetrievedChunk, SourceType } from '../types.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
 import { finalRank, recencyHalfLifeDays } from './ranking.js';
+import { synthesize } from './synthesize.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -64,7 +65,7 @@ export async function searchKB(ctx: DBContext, query: string, limitOrOpts: numbe
   const rows = ctx.db
     .prepare(
       `SELECT c.id, c.source_id, c.chunk_index, c.text, c.token_count, c.created_at,
-              c.embedding_json, s.url AS source_url, s.title AS source_title,
+              c.embedding_json, c.section_title, s.url AS source_url, s.title AS source_title,
               s.ingested_at, s.source_weight, s.type AS source_type, s.collection
        FROM chunks c JOIN sources s ON c.source_id = s.id
        ${whereClause}`
@@ -102,7 +103,8 @@ export async function searchKB(ctx: DBContext, query: string, limitOrOpts: numbe
         source_url: r.source_url,
         source_title: r.source_title,
         source_type: r.source_type as SourceType,
-        collection: r.collection
+        collection: r.collection,
+        section_title: r.section_title || null
       } satisfies RetrievedChunk;
     })
     .sort((a, b) => b.final_score - a.final_score)
@@ -140,13 +142,10 @@ export async function answerQuestion(ctx: DBContext, question: string, filters?:
     return lines.join('\n');
   }
 
-  // Synthesize answer bullets from top chunks
-  const bullets: string[] = [];
+  // Build citation map
   const citationMap = new Map<number, { index: number; title: string; url: string }>();
   let citationIdx = 0;
-
   for (const hit of hits) {
-    // Track unique sources for citations
     if (!citationMap.has(hit.source_id)) {
       citationIdx++;
       citationMap.set(hit.source_id, {
@@ -155,17 +154,12 @@ export async function answerQuestion(ctx: DBContext, question: string, filters?:
         url: hit.source_url
       });
     }
-    const citation = citationMap.get(hit.source_id)!;
-    const snippet = hit.text.slice(0, 280).replace(/\n+/g, ' ').trim();
-    bullets.push(`- ${snippet}${hit.text.length > 280 ? '...' : ''} [${citation.index}]`);
   }
 
-  // Cap bullets at 8
-  const answerBullets = bullets.slice(0, 8);
+  // Synthesize answer
+  const { answerLines, lowConfidence } = synthesize(question, hits, citationMap);
 
-  // Confidence warning
-  const avgScore = hits.reduce((sum, h) => sum + h.final_score, 0) / hits.length;
-  const confidenceNote = avgScore < 0.3
+  const confidenceNote = lowConfidence
     ? '\n  Note: Confidence is low — results may be loosely related. Try narrower filters or ingest more relevant content.'
     : '';
 
@@ -185,7 +179,7 @@ export async function answerQuestion(ctx: DBContext, question: string, filters?:
 
   return [
     `Answer:`,
-    ...answerBullets,
+    ...answerLines,
     confidenceNote,
     '',
     `Citations:`,

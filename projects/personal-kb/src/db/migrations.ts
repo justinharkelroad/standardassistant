@@ -122,6 +122,9 @@ export function runMigrations(db: Database.Database): void {
   ensureColumn(db, 'sources', 'extraction_method', 'TEXT');
   ensureColumn(db, 'sources', 'extraction_confidence', 'REAL');
 
+  // Section-aware chunking: section_title on chunks
+  ensureColumn(db, 'chunks', 'section_title', 'TEXT');
+
   // Phase 4: collection support
   ensureColumn(db, 'sources', 'collection', "TEXT NOT NULL DEFAULT 'default'");
   db.exec(`

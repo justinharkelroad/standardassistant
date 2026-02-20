@@ -34,6 +34,7 @@ export interface RetrievedChunk extends ChunkRecord {
   source_title: string | null;
   source_type: SourceType;
   collection: string;
+  section_title: string | null;
 }
 
 export interface AskFilters {

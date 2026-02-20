@@ -1,5 +1,5 @@
 import { DBContext } from '../db/client.js';
-import { chunkText, simpleTokenCount } from '../utils/chunking.js';
+import { chunkText, chunkBySections, simpleTokenCount, SectionChunk } from '../utils/chunking.js';
 import { embedText } from '../retrieval/embeddings.js';
 import { extractFromUrl, RelationType } from './extractors.js';
 import { sourceWeightFor } from '../retrieval/ranking.js';
@@ -123,28 +123,36 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
   }
 
   const extractedText = extracted.text || '';
-  let chunks = chunkText(extractedText);
-  if (chunks.length === 0) {
+  let sectionChunks: SectionChunk[];
+
+  if (extracted.sections && extracted.sections.length > 0) {
+    sectionChunks = chunkBySections(extracted.sections);
+  } else {
+    const plainChunks = chunkText(extractedText);
+    sectionChunks = plainChunks.map((text) => ({ text, sectionTitle: null }));
+  }
+
+  if (sectionChunks.length === 0) {
     const trimmed = extractedText.trim();
     if (trimmed.length > 0) {
-      chunks = [trimmed];
+      sectionChunks = [{ text: trimmed, sectionTitle: null }];
     } else {
       throw new Error('Extraction produced empty text; refusing to complete ingest with zero chunks.');
     }
   }
 
   const insertChunk = db.prepare(
-    'INSERT INTO chunks (source_id, chunk_index, text, token_count, embedding_json) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO chunks (source_id, chunk_index, text, token_count, embedding_json, section_title) VALUES (?, ?, ?, ?, ?, ?)'
   );
 
   const insertVec = sqliteVecEnabled
     ? db.prepare('INSERT OR REPLACE INTO chunk_vec (chunk_id, embedding) VALUES (?, ?)')
     : null;
 
-  for (let i = 0; i < chunks.length; i++) {
-    const text = chunks[i];
+  for (let i = 0; i < sectionChunks.length; i++) {
+    const { text, sectionTitle } = sectionChunks[i];
     const emb = await embedText(text);
-    const result = insertChunk.run(sourceId, i, text, simpleTokenCount(text), JSON.stringify(emb));
+    const result = insertChunk.run(sourceId, i, text, simpleTokenCount(text), JSON.stringify(emb), sectionTitle);
     if (sqliteVecEnabled) {
       try {
         insertVec?.run(Number(result.lastInsertRowid), JSON.stringify(emb));
@@ -153,6 +161,8 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
       }
     }
   }
+
+  const chunks = sectionChunks;
 
   recordJobMetric(ctx, {
     jobId: options.jobId,

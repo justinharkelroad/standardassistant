@@ -44,8 +44,13 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
     const existing = db
       .prepare('SELECT id FROM sources WHERE canonical_url = ? OR url = ? ORDER BY id DESC LIMIT 1')
       .get(canonicalUrl, canonicalUrl) as { id: number } | undefined;
-    if (existing && options.parentSourceId && options.relationType) {
-      linkRelation(ctx, options.parentSourceId, existing.id, options.relationType);
+    if (existing) {
+      if (options.collection) {
+        db.prepare('UPDATE sources SET collection = ? WHERE id = ?').run(options.collection, existing.id);
+      }
+      if (options.parentSourceId && options.relationType) {
+        linkRelation(ctx, options.parentSourceId, existing.id, options.relationType);
+      }
     }
     return existing?.id || 0;
   }
@@ -55,6 +60,9 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
     .prepare('SELECT id FROM sources WHERE canonical_url = ? OR url = ? ORDER BY id DESC LIMIT 1')
     .get(canonicalUrl, canonicalUrl) as { id: number } | undefined;
   if (existing) {
+    if (options.collection) {
+      db.prepare('UPDATE sources SET collection = ? WHERE id = ?').run(options.collection, existing.id);
+    }
     if (options.parentSourceId && options.relationType) {
       linkRelation(ctx, options.parentSourceId, existing.id, options.relationType);
     }

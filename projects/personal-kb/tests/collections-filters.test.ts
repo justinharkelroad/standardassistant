@@ -226,6 +226,66 @@ describe('collections and filters', () => {
     expect(results.chunks[0].collection).toBe('test-col');
   });
 
+  it('reingest with --collection updates collection on existing source', async () => {
+    const { initDB } = await import('../src/db/client.js');
+    const { ingestUrl } = await import('../src/ingest/pipeline.js');
+
+    const ctx = initDB(':memory:');
+
+    // First ingest: lands in default collection
+    const sourceId = await ingestUrl(ctx, 'https://example.com/reassign-test');
+    const before = ctx.db.prepare('SELECT collection FROM sources WHERE id = ?').get(sourceId) as { collection: string };
+    expect(before.collection).toBe('default');
+
+    // Reingest same URL with explicit collection
+    const sameId = await ingestUrl(ctx, 'https://example.com/reassign-test', { collection: 'standardplaybook' });
+    expect(sameId).toBe(sourceId); // same row reused
+
+    const after = ctx.db.prepare('SELECT collection FROM sources WHERE id = ?').get(sourceId) as { collection: string };
+    expect(after.collection).toBe('standardplaybook');
+  });
+
+  it('collections aggregation reflects counts after collection reassignment', async () => {
+    const { extractFromUrl } = await import('../src/ingest/extractors.js');
+
+    vi.mocked(extractFromUrl).mockResolvedValueOnce({
+      source: { type: 'article', title: 'A', text: 'Content A.', extractionMethod: 'web_fetch', extractionConfidence: 0.88 },
+      related: []
+    });
+    vi.mocked(extractFromUrl).mockResolvedValueOnce({
+      source: { type: 'article', title: 'B', text: 'Content B.', extractionMethod: 'web_fetch', extractionConfidence: 0.88 },
+      related: []
+    });
+
+    const { initDB } = await import('../src/db/client.js');
+    const { ingestUrl } = await import('../src/ingest/pipeline.js');
+
+    const ctx = initDB(':memory:');
+
+    // Ingest two sources into default
+    await ingestUrl(ctx, 'https://a.com/1');
+    await ingestUrl(ctx, 'https://b.com/2');
+
+    // Reassign one to standardplaybook
+    await ingestUrl(ctx, 'https://a.com/1', { collection: 'standardplaybook' });
+
+    const rows = ctx.db
+      .prepare(
+        `SELECT s.collection,
+                COUNT(DISTINCT s.id) AS source_count
+         FROM sources s
+         GROUP BY s.collection
+         ORDER BY s.collection`
+      )
+      .all() as Array<{ collection: string; source_count: number }>;
+
+    const defaultRow = rows.find((r) => r.collection === 'default');
+    const spRow = rows.find((r) => r.collection === 'standardplaybook');
+
+    expect(defaultRow?.source_count).toBe(1);
+    expect(spRow?.source_count).toBe(1);
+  });
+
   it('collections table aggregation works', async () => {
     const { extractFromUrl } = await import('../src/ingest/extractors.js');
 

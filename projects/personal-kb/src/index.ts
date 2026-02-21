@@ -9,20 +9,24 @@ import { AskFilters, SourceType } from './types.js';
 
 const VALID_SOURCE_TYPES: SourceType[] = ['article', 'pdf', 'youtube', 'twitter', 'tiktok'];
 
-function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string> } {
+function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string>; boolFlags: Set<string> } {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
+  const boolFlags = new Set<string>();
   let i = 0;
   while (i < args.length) {
     if (args[i].startsWith('--') && i + 1 < args.length && !args[i + 1].startsWith('--')) {
       flags[args[i].slice(2)] = args[i + 1];
       i += 2;
+    } else if (args[i].startsWith('--')) {
+      boolFlags.add(args[i].slice(2));
+      i++;
     } else {
       positional.push(args[i]);
       i++;
     }
   }
-  return { positional, flags };
+  return { positional, flags, boolFlags };
 }
 
 async function main() {
@@ -33,15 +37,16 @@ async function main() {
   const rest = rawArgs.slice(1);
 
   if (cmd === 'ingest') {
-    const { positional, flags } = parseFlags(rest);
+    const { positional, flags, boolFlags } = parseFlags(rest);
     const url = positional[0];
     if (!url) {
-      console.error('Error: URL required.\nUsage: npm run dev -- ingest <url> [--collection <name>]');
+      console.error('Error: URL required.\nUsage: npm run dev -- ingest <url> [--collection <name>] [--force]');
       process.exit(1);
     }
     const collection = flags.collection;
-    const sourceId = await ingestUrl(ctx, url, { collection });
-    console.log(`Ingested source #${sourceId}${collection ? ` into collection "${collection}"` : ''}`);
+    const force = boolFlags.has('force');
+    const sourceId = await ingestUrl(ctx, url, { collection, force });
+    console.log(`Ingested source #${sourceId}${collection ? ` into collection "${collection}"` : ''}${force ? ' (force re-ingest)' : ''}`);
     return;
   }
 
@@ -144,7 +149,7 @@ async function main() {
   }
 
   console.log('Usage:');
-  console.log('  npm run dev -- ingest <url> [--collection <name>]');
+  console.log('  npm run dev -- ingest <url> [--collection <name>] [--force]');
   console.log('  npm run dev -- ask "<question>" [--collection <name>] [--domain <domain>] [--source <type>] [--url <url>]');
   console.log('  npm run dev -- status');
   console.log('  npm run dev -- collections');

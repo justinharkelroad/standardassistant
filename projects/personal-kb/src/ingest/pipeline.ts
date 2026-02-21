@@ -1,5 +1,5 @@
 import { DBContext } from '../db/client.js';
-import { chunkText, chunkBySections, simpleTokenCount, SectionChunk } from '../utils/chunking.js';
+import { chunkText, chunkBySections, simpleTokenCount, SectionChunk, splitTextBySections } from '../utils/chunking.js';
 import { embedText } from '../retrieval/embeddings.js';
 import { extractFromUrl, RelationType } from './extractors.js';
 import { sourceWeightFor } from '../retrieval/ranking.js';
@@ -13,6 +13,7 @@ interface IngestOptions {
   relationType?: RelationType;
   jobId?: number;
   collection?: string;
+  force?: boolean;
   onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void>;
 }
 
@@ -60,13 +61,32 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
     .prepare('SELECT id FROM sources WHERE canonical_url = ? OR url = ? ORDER BY id DESC LIMIT 1')
     .get(canonicalUrl, canonicalUrl) as { id: number } | undefined;
   if (existing) {
-    if (options.collection) {
-      db.prepare('UPDATE sources SET collection = ? WHERE id = ?').run(options.collection, existing.id);
+    if (options.force) {
+      // Delete old data in FK-safe order so we can re-ingest fresh
+      const oldChunkIds = db
+        .prepare('SELECT id FROM chunks WHERE source_id = ?')
+        .all(existing.id) as Array<{ id: number }>;
+      for (const { id: cid } of oldChunkIds) {
+        db.prepare('DELETE FROM chunk_entities WHERE chunk_id = ?').run(cid);
+        if (sqliteVecEnabled) {
+          try { db.prepare('DELETE FROM chunk_vec WHERE chunk_id = ?').run(cid); } catch { /* may not exist */ }
+        }
+      }
+      db.prepare('DELETE FROM chunks WHERE source_id = ?').run(existing.id);
+      db.prepare('DELETE FROM source_relations WHERE parent_source_id = ? OR child_source_id = ?').run(existing.id, existing.id);
+      db.prepare('DELETE FROM summaries WHERE source_id = ?').run(existing.id);
+      db.prepare('DELETE FROM ingest_logs WHERE source_id = ?').run(existing.id);
+      db.prepare('DELETE FROM sources WHERE id = ?').run(existing.id);
+      // Fall through to fresh ingest
+    } else {
+      if (options.collection) {
+        db.prepare('UPDATE sources SET collection = ? WHERE id = ?').run(options.collection, existing.id);
+      }
+      if (options.parentSourceId && options.relationType) {
+        linkRelation(ctx, options.parentSourceId, existing.id, options.relationType);
+      }
+      return existing.id;
     }
-    if (options.parentSourceId && options.relationType) {
-      linkRelation(ctx, options.parentSourceId, existing.id, options.relationType);
-    }
-    return existing.id;
   }
 
   const settings = getSettings(ctx);
@@ -128,8 +148,14 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
   if (extracted.sections && extracted.sections.length > 0) {
     sectionChunks = chunkBySections(extracted.sections);
   } else {
-    const plainChunks = chunkText(extractedText);
-    sectionChunks = plainChunks.map((text) => ({ text, sectionTitle: null }));
+    // Try plain-text heading detection before falling back to flat chunking
+    const plainSections = splitTextBySections(extractedText);
+    if (plainSections.length > 1) {
+      sectionChunks = chunkBySections(plainSections);
+    } else {
+      const plainChunks = chunkText(extractedText);
+      sectionChunks = plainChunks.map((text) => ({ text, sectionTitle: null }));
+    }
   }
 
   if (sectionChunks.length === 0) {
@@ -196,7 +222,7 @@ async function ingestSingle(ctx: DBContext, url: string, options: IngestOptions)
 export async function ingestUrl(
   ctx: DBContext,
   url: string,
-  options?: { collection?: string; onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void> }
+  options?: { collection?: string; force?: boolean; onIngested?: (event: { sourceId: number; url: string; summary: string }) => Promise<void> }
 ): Promise<number> {
   const { db } = ctx;
 
@@ -209,7 +235,7 @@ export async function ingestUrl(
 
   try {
     logIngestEvent(ctx, { jobId, sourceUrl: url, eventType: 'job_started', event: { url } });
-    const sourceId = await ingestSingle(ctx, url, { visited: new Set<string>(), jobId, collection: options?.collection, onIngested: options?.onIngested });
+    const sourceId = await ingestSingle(ctx, url, { visited: new Set<string>(), jobId, collection: options?.collection, force: options?.force, onIngested: options?.onIngested });
     db.prepare('UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run('done', jobId);
     recordJobMetric(ctx, { jobId, metricName: 'job_duration_ms', metricValue: Date.now() - started });
     logIngestEvent(ctx, { jobId, sourceId, sourceUrl: url, eventType: 'job_completed' });

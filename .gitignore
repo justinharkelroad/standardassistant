@@ -1,0 +1,6 @@
+# OpenClaw local/runtime + persona-local files
+.openclaw/
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+TOOLS.md
